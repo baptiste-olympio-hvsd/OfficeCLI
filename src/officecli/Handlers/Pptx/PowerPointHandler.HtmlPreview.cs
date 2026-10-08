@@ -762,10 +762,19 @@ public partial class PowerPointHandler
             }
         }
 
+        // Header/footer visibility: the four metadata placeholders (footer,
+        // date, header, slide number) carry their TEXT on the layout/master
+        // but only DISPLAY where the <p:hf> flags say so — that is the actual
+        // PowerPoint contract. This deck's master stores the footer text
+        // ("Sources :") in its ftr placeholder yet declares <p:hf ftr="0"/>:
+        // PowerPoint shows nothing. Without this, the preview leaked the
+        // master's footer text onto every slide.
+        var hf = SlideComposition.ResolveEffectiveHfFlags(slidePart);
+
         // Render shapes from SlideLayout (higher priority)
         var layoutPart = slidePart.SlideLayoutPart;
         if (layoutPart != null)
-            RenderInheritedShapes(sb, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree, layoutPart, slidePlaceholders, themeColors, slideNum);
+            RenderInheritedShapes(sb, layoutPart.SlideLayout?.CommonSlideData?.ShapeTree, layoutPart, slidePlaceholders, themeColors, slideNum, hf);
 
         // Render shapes from SlideMaster (lower priority, only if not in layout).
         // R12-2: <p:sld showMasterSp="0"> suppresses master-level decoration.
@@ -774,7 +783,7 @@ public partial class PowerPointHandler
         var showMasterSp = GetSlide(slidePart).ShowMasterShapes?.Value ?? true;
         var masterPart = layoutPart?.SlideMasterPart;
         if (masterPart != null && showMasterSp)
-            RenderInheritedShapes(sb, masterPart.SlideMaster?.CommonSlideData?.ShapeTree, masterPart, slidePlaceholders, themeColors, slideNum);
+            RenderInheritedShapes(sb, masterPart.SlideMaster?.CommonSlideData?.ShapeTree, masterPart, slidePlaceholders, themeColors, slideNum, hf);
     }
 
     // RenderInheritedShapes — render the layout/master shapes that the slide
@@ -794,7 +803,8 @@ public partial class PowerPointHandler
     //      placeholder authored without an explicit type leaked its prompt
     //      text onto the slide.
     private void RenderInheritedShapes(StringBuilder sb, ShapeTree? shapeTree, OpenXmlPart part,
-        HashSet<string> skipIndices, Dictionary<string, string> themeColors, int slideNum = 1)
+        HashSet<string> skipIndices, Dictionary<string, string> themeColors, int slideNum,
+        (bool Ftr, bool Dt, bool Hdr, bool SldNum) hf)
     {
         if (shapeTree == null) return;
 
@@ -803,7 +813,7 @@ public partial class PowerPointHandler
             switch (element)
             {
                 case Shape shape:
-                    RenderInheritedShape(sb, shape, part, skipIndices, themeColors, slideNum);
+                    RenderInheritedShape(sb, shape, part, skipIndices, themeColors, slideNum, hf);
                     break;
                 // R12-1: PowerPoint renders group/connector/graphic-frame
                 // decoration from the layout/master tree too. The old code
@@ -834,7 +844,8 @@ public partial class PowerPointHandler
     }
 
     private void RenderInheritedShape(StringBuilder sb, Shape shape, OpenXmlPart part,
-        HashSet<string> skipIndices, Dictionary<string, string> themeColors, int slideNum = 1)
+        HashSet<string> skipIndices, Dictionary<string, string> themeColors, int slideNum,
+        (bool Ftr, bool Dt, bool Hdr, bool SldNum) hf)
     {
         var ph = shape.NonVisualShapeProperties?.ApplicationNonVisualDrawingProperties
             ?.GetFirstChild<PlaceholderShape>();
@@ -853,6 +864,15 @@ public partial class PowerPointHandler
             // every type-based check.
             var type = ph.Type?.HasValue == true ? ph.Type.Value : PlaceholderValues.Object;
             suppressText = !IsLayoutSuppliedTextPlaceholder(type);
+
+            // Metadata placeholders (ftr/dt/hdr/sldNum) carry their text on
+            // the layout/master but only display where the <p:hf> flags allow.
+            // A master with <p:hf ftr="0"/> stores the footer text yet shows
+            // nothing — PowerPoint semantics; the preview must match.
+            if (type == PlaceholderValues.Footer && !hf.Ftr) return;
+            if (type == PlaceholderValues.DateAndTime && !hf.Dt) return;
+            if (type == PlaceholderValues.Header && !hf.Hdr) return;
+            if (type == PlaceholderValues.SlideNumber && !hf.SldNum) return;
         }
 
         // Skip shapes with no visual content. When text is suppressed, treat

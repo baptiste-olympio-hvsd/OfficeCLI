@@ -23,10 +23,10 @@ namespace OfficeCli.Handlers;
 /// geometry at all for slot-bound shapes (issue #466, symptom 6).
 ///
 /// This module is the one place that resolves the model; consumers read from
-/// it instead of improvising. Scope of this first extraction: placeholder
-/// slot matching, inherited-frame resolution and its provenance. Later steps
-/// per issue #466: layer paint order, hf/showMasterSp/hidden gates, effective
-/// fill inheritance.
+/// it instead of improvising. Scope so far: placeholder slot matching,
+/// inherited-frame resolution and its provenance, and the <p:hf> visibility
+/// gates. Later steps per issue #466: layer paint order, showMasterSp/hidden
+/// gates, effective fill inheritance.
 ///
 /// Frame semantics (ECMA-376): &lt;a:xfrm&gt; is ATOMIC. A placeholder either
 /// carries a complete xfrm (owns its frame) or none (inherits the whole frame
@@ -223,5 +223,47 @@ internal static class SlideComposition
         if (frame.SourcePh.Index?.HasValue == true)
             predicate += $"[@idx={frame.SourcePh.Index.Value}]";
         return $"/slide[{slideNum}]/{level}/ph{predicate}";
+    }
+
+    // ==================== Header/Footer Visibility ====================
+
+    /// <summary>
+    /// Effective &lt;p:hf&gt; visibility for the metadata placeholders (dt/ftr/
+    /// hdr/sldNum) shown on a slide. Per ECMA-376 each attribute defaults to
+    /// SHOWN when absent; the most specific level that carries the attribute
+    /// wins (slide &gt; layout &gt; master — same precedence as PowerPoint's
+    /// Header &amp; Footer dialog: Apply overrides Apply to All).
+    /// </summary>
+    public static (bool Ftr, bool Dt, bool Hdr, bool SldNum) ResolveEffectiveHfFlags(SlidePart slidePart)
+    {
+        var (ftr, dt, hdr, sldNum) = (true, true, true, true);
+        // Coarse-to-fine so a more specific hf overrides a broader one.
+        foreach (var container in new OpenXmlElement?[] {
+            slidePart.SlideLayoutPart?.SlideMasterPart?.SlideMaster,
+            slidePart.SlideLayoutPart?.SlideLayout,
+            slidePart.Slide })
+        {
+            var hfEl = container?.ChildElements.FirstOrDefault(c => c.LocalName == "hf"
+                && c.NamespaceUri == "http://schemas.openxmlformats.org/presentationml/2006/main");
+            if (hfEl == null) continue;
+            // CONSISTENCY(hf-unknown-element): read raw attributes by local
+            // name — GetAttribute on the typed HeaderFooter throws for attrs
+            // outside its declared schema, and p:hf on p:sld reloads as
+            // OpenXmlUnknownElement (see ReadSlideHeaderFooter).
+            foreach (var attr in hfEl.GetAttributes())
+            {
+                bool? b = attr.Value is "1" or "true" ? true
+                    : attr.Value is "0" or "false" ? false : null;
+                if (b != true && b != false) continue;
+                switch (attr.LocalName)
+                {
+                    case "ftr": ftr = b.Value; break;
+                    case "dt": dt = b.Value; break;
+                    case "hdr": hdr = b.Value; break;
+                    case "sldNum": sldNum = b.Value; break;
+                }
+            }
+        }
+        return (ftr, dt, hdr, sldNum);
     }
 }
